@@ -3803,6 +3803,10 @@ if (typeof module !== "undefined") module.exports = JXW;
       bd.type = "button";
       bd.addEventListener("click", () => { if (window.openBoard) window.openBoard(plan); });
       acts.appendChild(bd);
+      const sh = el("button", "chip", "复制分享链接");
+      sh.type = "button";
+      sh.addEventListener("click", () => copy(shareUrl(lastQuery), sh, "链接已复制"));
+      acts.appendChild(sh);
       b.appendChild(acts);
     }
     m.append(a, b);
