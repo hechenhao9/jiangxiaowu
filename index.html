@@ -2350,7 +2350,7 @@ const JXW = (function () {
     plan: /行程|路线|规划|几天|怎么玩|攻略|一日游|两日|三日|四日|排个|排行程|安排|玩几天|带我逛/,
     wuhan: /武汉|江城|三镇|过早|武汉人|这座城市/,
     spu: /spu|数命|超级个体|五项|能力|公式|u=p|p·s|误解/,
-    community: /社区|智民里|创新天地|入驻|工坊|板块|适合|加入|孵化|fde|opc/,
+    community: /社区|智民里|创新天地|入驻|工坊|板块|适合谁|适合什么|什么人适合|加入|孵化|fde|opc/,
     saig: /saig|比赛|大赛|赛事|报名|参赛|评分|成绩|席位|时间节点|路演|赛道|提交作品/,
     food: /吃|美食|小吃|过早|宵夜|热干面|豆皮|糊汤粉|小龙虾|哪条街/,
     transit: /交通|怎么去|地铁|公交|轮渡|机场|火车站|打车|过江/,
@@ -3309,7 +3309,129 @@ const JXW = (function () {
       kind: "tired"
     };
   }
-  function fallbackReply(state) {    const last = state.lastTopic;
+  /* ============ 片区 / 时段 / 主题：让人问得随意也能接住 ============ */
+  const AREA_KEY = [
+    ["光谷", ["光谷", "珞喻", "关山"]],
+    ["汉口老城", ["汉口", "江汉路", "江岸", "黎黄陂", "吉庆街", "汉口江滩", "中山大道", "武广"]],
+    ["武昌古城", ["武昌古城", "司门口", "户部巷", "粮道街", "昙华林", "中华路", "大成路"]],
+    ["武昌东湖", ["东湖", "磨山", "凌波门", "听涛", "省博", "楚河汉街", "汉街"]],
+    ["汉阳", ["汉阳", "龟山", "晴川", "琴台", "四新", "鹦鹉"]],
+    ["江夏", ["江夏", "纸坊"]],
+    ["蔡甸", ["蔡甸", "花博汇"]],
+    ["黄陂", ["黄陂", "木兰"]]
+  ];
+  function areaOf(t) {
+    for (const [a, ks] of AREA_KEY) if (ks.some(k => t.indexOf(k) >= 0)) return a;
+    return null;
+  }
+
+  function firstLine(s) {
+    const w = String(s.why || "").split(/[。；]/)[0];
+    return w.length > 46 ? w.slice(0, 44) + "…" : w;
+  }
+  function spotLine(s) {
+    return `· ${s.name}（${s.dur} 分钟）—— ${firstLine(s)}`;
+  }
+  function pickIn(area, n, want) {
+    let list = K.SPOTS.filter(s => s.area === area && s.kind !== "美食");
+    if (want) list = list.filter(want);
+    const rank = s => (s.tag || []).reduce((a, x) =>
+      a + (x === "classic" ? 3 : x === "photo" ? 2 : x === "indoor" ? 1 : 0), 0) - s.intensity;
+    return list.slice().sort((a, b) => rank(b) - rank(a)).slice(0, n);
+  }
+
+  /* "我住光谷，附近有什么逛的" / "汉口这边有什么" */
+  function areaReply(area, t) {
+    const spots = pickIn(area, 3);
+    if (!spots.length) return null;
+    const food = K.FOOD_STREETS.filter(f => f.area === area).slice(0, 1)[0];
+    const body = spots.map(spotLine).join("\n");
+    const eat = food ? `\n\n吃饭就近：${food.name}${food.why ? "，" + String(food.why).split(/[。；]/)[0] : "，走几步就到"}。` : "";
+    return {
+      text: `${area}这一片，我给你三个点，都在一条线上，不用折返：\n${body}${eat}\n\n半天到一天刚好。要按你的时间排细一点，告诉我“半天/一天”和几个人就行。`,
+      kind: "area", source: "《2026 武汉旅游产品手册》"
+    };
+  }
+
+  /* "半天时间能去哪" / "下午没事干" / "晚上去哪看夜景" */
+  function slotReply(kind, t) {
+    if (kind === "night") {
+      const night = K.SPOTS.filter(s => (s.tag || []).indexOf("night") >= 0 && s.kind !== "美食");
+      const pick = night.slice(0, 3);
+      const eats = K.FOOD_STREETS.filter(f => /宵夜|夜市|吉庆|万松园|大成路/.test(f.name + (f.why || ""))).slice(0, 2);
+      return {
+        text: `晚上就三件事：看江、看灯、吃宵夜。\n${pick.map(s => `· ${s.name}（${s.dur} 分钟）—— ${firstLine(s)}`).join("\n")}\n\n宵夜就近去：${eats.map(e => e.name).join("、") || "吉庆街、万松园"}，十点后正热闹。\n\n想省事就按这个顺序：先江边看灯，再走过去吃。`,
+        kind: "slot", source: "《2026 武汉旅游产品手册》"
+      };
+    }
+    const area = areaOf(t) || "武昌古城";
+    // 按可用的钟点控制总量，别把"半天"排成一整天
+    const budgetMin = kind === "half" ? 230 : kind === "afternoon" ? 170 : kind === "morning" ? 170 : 200;
+    const spots = [];
+    let used = 0;
+    for (const s of pickIn(area, 6)) {
+      if (used + s.dur > budgetMin) continue;
+      spots.push(s); used += s.dur;
+      if (spots.length >= 3) break;
+    }
+    if (!spots.length) spots.push(pickIn(area, 1)[0]);
+    const dusk = kind === "afternoon" || kind === "half";
+    return {
+      text: `${kind === "half" ? "半天" : kind === "morning" ? "上午" : kind === "afternoon" ? "下午" : "这一天"}，就近在${area}走，别跨江：\n${spots.map(spotLine).join("\n")}${dusk ? "\n· 收尾去看江（20 分钟）—— 傍晚的江面最出片，太阳落下去那十分钟别错过" : ""}\n\n全程步行加一趟短打车，两三个小时能收工。想连成一天，我再给你排。`,
+      kind: "slot", source: "《2026 武汉旅游产品手册》"
+    };
+  }
+
+  /* "有什么适合拍照的地方" */
+  function photoReply() {
+    const pick = K.SPOTS.filter(s => (s.tag || []).indexOf("photo") >= 0).slice(0, 4);
+    return {
+      text: `要出片，按光线排比按景点排管用：\n${pick.map(s => `· ${s.name}（${s.dur} 分钟）—— ${firstLine(s)}`).join("\n")}\n\n一句实话：早上七点前的江边和九点前的老街，人少光好；中午别硬拍，武汉的太阳很硬。`,
+      kind: "photo", source: "《2026 武汉旅游产品手册》"
+    };
+  }
+
+  /* "预算不多，能玩什么" */
+  function cheapReply() {
+    const free = K.SPOTS.filter(s => Number(s.ticket) === 0 && s.kind !== "美食").slice(0, 5);
+    return {
+      text: `钱少也能玩得实在，武汉免费的东西比想象中多：\n${free.map(s => `· ${s.name}—— ${firstLine(s)}`).join("\n")}\n\n一天的花销基本只有吃和市内交通：过早十来块，地铁一天不到二十。要我把免费的串成一天，说一声。`,
+      kind: "cheap", source: "《2026 武汉旅游产品手册》"
+    };
+  }
+
+  /* 本地人周末 + 带娃能去哪 */
+  function weekendReply() {
+    const kids = ["武汉江滩 · 中华路城市阳台", "东湖绿道", "楚河汉街", "汉口江滩"];
+    const list = kids.map(n => K.SPOTS.find(s => s.name.indexOf(n) >= 0)).filter(Boolean);
+    return {
+      text: `武汉人周末其实不太往景区挤，通常是这几件事：\n${list.map(s => `· ${s.name}（${s.dur} 分钟）—— ${firstLine(s)}`).join("\n")}\n\n再不就是开车出城：木兰草原或者花博汇，一天来回。\n\n你是想跟着本地人那样过个周末，还是想两天把该看的都看到？这两种我排法不一样。`,
+      kind: "local", source: "《2026 武汉旅游产品手册》"
+    };
+  }
+  function kidReply() {
+    const list = K.SPOTS.filter(s => (s.tag || []).indexOf("kid") >= 0 && s.dur <= 150 && s.intensity <= 2)
+      .sort((a, b) => a.intensity - b.intensity || a.dur - b.dur).slice(0, 4);
+    return {
+      text: `带小孩，重点不是看点多少，是别让他走崩：\n${list.map(s => `· ${s.name}（${s.dur} 分钟）—— ${firstLine(s)}`).join("\n")}\n\n一句实话：三岁这个年纪，一天两个点就到顶了，中间必须有一次能坐下来的时间。要我把这几个排成一天，说一句“排一天，带孩子”就行。`,
+      kind: "kid", source: "《2026 武汉旅游产品手册》"
+    };
+  }
+
+  /* 先判断再问，别一上来就伸手要参数 */
+  function enoughReply(raw, state) {
+    const days = parseDays(String(raw).toLowerCase().replace(/\s+/g, ""));
+    const n = days || 2;
+    const verdict = n <= 1 ? "一天只够看一角，选一个片区，别贪。" : n === 2 ? "两天够，而且刚好：一天武昌、一天汉口，江只跨一次。" : "够，还能往外走一趟（木兰或者花博汇）。";
+    const r = planReply(raw, state);
+    return {
+      text: `${verdict}\n\n${r.text}`,
+      kind: r.kind, source: r.source, plan: r.plan
+    };
+  }
+
+  function fallbackReply(state) {
+    const last = state.lastTopic;
     const tail = last ? `\n\n要不接着说${last === "wuhan" ? "武汉" : last === "spu" ? "数命 SPU" : last === "community" ? "社区" : last === "saig" ? "比赛" : "刚才那个话题"}？` : "";
     return {
       text: `这句我没接住，怕答偏了。我能聊的就四块：武汉怎么玩、数命 SPU 是什么、社区怎么加入、SAIG 比赛怎么报名。${tail}`,
@@ -3347,7 +3469,7 @@ const JXW = (function () {
     if (state.lastPlan && state.lastPlan.length && /(下雨|雨天|怕晒|太晒|太热|热死)/.test(t) && !/(今天|明天|现在|这几天)/.test(t)) {
       return planReply(raw, state);
     }
-    if (/(今天|明天|现在|这会儿|这几天)/.test(t) && /(下雨|天气|雨|晴|热|冷|人多|客流|挤不挤|排队)/.test(t)) {
+    if (/(今天|明天|现在|这会儿|这几天)/.test(t) && /(下雨|天气|雨|晴|气温|人多|客流|挤不挤|排队|冷不冷|热不热)/.test(t)) {
       return realtimeReply(/人多|客流|挤|排队/.test(t) ? "people" : "weather");
     }
     if (/(人多|客流|挤不挤|要排队)/.test(t)) return realtimeReply("people");
@@ -3381,14 +3503,67 @@ const JXW = (function () {
     const slotFill = (!!(state.plan && (state.plan.days || state.plan.budget || state.plan.who)) ||
       state.planOpen === true) &&
       !!(parseDays(t) || parseBudget(t) || parseWho(t) || parseVibe(t));
-    const strongPlan = hit.plan || slotFill ||
+    // 有些问句表面像"排行程"，其实该先给判断/直接答，别一律伸手要参数
+    const quickAsk = /(够(玩|逛|看)?吗|够不够|来得及吗|时间够)/.test(t) && !!parseDays(t);
+    const quickArea = !!areaOf(t) && /(怎么玩|怎么逛|有什么|这边|附近|周边|去哪)/.test(t);
+    const quickLocal = /周末|平日|平时/.test(t) && !parseBudget(t) && !parseWho(t);
+    const quickKid = /(小孩|孩子|娃|宝宝|亲子)/.test(t) && /(去哪|玩什么|能去|适合)/.test(t) && !parseDays(t);
+    const strongPlan = !quickAsk && !quickArea && !quickLocal && !quickKid && (hit.plan || slotFill ||
       (parseDays(t) && (parseBudget(t) || parseWho(t) || parseVibe(t))) ||
-      (parseDays(t) && t.replace(/[\s，,。.!！?？~]/g, "").length <= 10);
+      (parseDays(t) && t.replace(/[\s，,。.!！?？~]/g, "").length <= 10));
+
     if (strongPlan) {
       const r = planReply(text, state);
       return withHint(r, state, r.kind === "ask" ? "ask" : "plan");
     }
 
+    // 8.2) 片区 / 时段 / 主题：不问"你想聊什么"，直接把这一片讲透
+    const areaHit = areaOf(t);
+    const wantArea = areaHit && /(这边|附近|周边|这一片|有什么|去哪|怎么逛|怎么玩|住|在)/.test(t) &&
+      !hit.saig && !hit.community && !hit.spu;
+    if (wantArea) {
+      const r = areaReply(areaHit, t);
+      if (r) { state.lastTopic = "wuhan"; state.done.wuhan = true; return withHint(r, state, "wuhan"); }
+    }
+    if (!hit.saig && !hit.community && !hit.spu && !hit.plan) {
+      const slot =
+        /(晚上|夜里|夜景|夜市|灯光)/.test(t) ? "night" :
+        /半天|几个小时|一上午|一下午/.test(t) && !/上午|下午|晚上/.test(t) ? "half" :
+        /上午|早上/.test(t) ? "morning" :
+        /下午|午后/.test(t) ? "afternoon" : null;
+      if (slot) {
+        const r = slotReply(slot, t);
+        state.lastTopic = "wuhan"; state.done.wuhan = true;
+        return withHint(r, state, "wuhan");
+      }
+      if (/(拍照|出片|打卡|好看|机位)/.test(t)) {
+        state.lastTopic = "wuhan"; state.done.wuhan = true;
+        return withHint(photoReply(), state, "wuhan");
+      }
+      if (/(预算不多|没钱|穷游|省钱|便宜点|不花钱|免费)/.test(t) && !hit.food) {
+        state.lastTopic = "wuhan"; state.done.wuhan = true;
+        return withHint(cheapReply(), state, "wuhan");
+      }
+    }
+    // "两天够玩吗"：先给判断，再补齐参数——别一上来就伸手要三件事
+    if (/(够(玩|逛|看)?吗|够不够|来得及吗|时间够)/.test(t) && parseDays(t)) {
+      const r = enoughReply(text, state);
+      return withHint(r, state, r.kind === "ask" ? "ask" : "plan");
+    }
+
+    if (quickLocal) {
+      state.lastTopic = "wuhan"; state.done.wuhan = true;
+      return withHint(weekendReply(), state, "wuhan");
+    }
+    if (quickKid) {
+      state.lastTopic = "wuhan"; state.done.wuhan = true;
+      return withHint(kidReply(), state, "wuhan");
+    }
+    // "两天够玩吗"：先给判断，再补齐参数——别一上来就伸手要三件事
+    if (quickAsk) {
+      const r = enoughReply(text, state);
+      return withHint(r, state, r.kind === "ask" ? "ask" : "plan");
+    }
     // 8.5) 点名一个我也不知道的店：先认下来，别串到"美食四层"里假装知道
     const ASKX = /(?:^|[，,。？?])([\u4e00-\u9fa5a-z0-9·]{2,10})(?:好吃吗|好玩吗|值得去吗|靠谱吗)/;
     const askX = ASKX.exec(t);
