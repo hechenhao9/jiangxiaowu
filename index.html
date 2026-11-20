@@ -1099,6 +1099,31 @@ body {
   .msg .bubble { max-width: 82%; font-size: 15px; }
   .chat-head { height: 48px; }
 }
+
+/* --- 气泡工具条：听它念 / 复制分享链接 --- */
+.bub-tools { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.bub-btn {
+  border: 1px solid rgba(14,143,168,.28); background: #fff; color: #3c545f;
+  font-size: 11.5px; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+  transition: .15s; font-family: inherit;
+}
+.bub-btn:hover { border-color: #0e8fa8; color: #0b7d93; background: #f4fbfc; }
+.bub-btn.on { background: #0e8fa8; border-color: #0e8fa8; color: #fff; }
+
+/* --- 轻提示 --- */
+.toast {
+  position: fixed; left: 50%; bottom: 132px; transform: translate(-50%, 12px);
+  background: rgba(13,32,41,.92); color: #fff; font-size: 12.5px;
+  padding: 8px 16px; border-radius: 999px; opacity: 0; pointer-events: none;
+  transition: .22s; z-index: 60;
+}
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+body.sized .toast { position: absolute; bottom: 120px; }
+
+/* --- 怎么证明 --- */
+.chip-proof { border-style: dashed; border-color: rgba(232,98,42,.5); color: #b0491c; }
+.prooflinks { display: flex; gap: 14px; margin-top: 14px; font-size: 12.5px; }
+.prooflinks a { color: #0e8fa8; text-decoration: none; border-bottom: 1px dashed rgba(14,143,168,.5); }
 </style>
 <style>/* assets/map.css */
 /* ============================================================
@@ -3452,6 +3477,7 @@ if (typeof module !== "undefined") module.exports = JXW;
 
   let state = {};
   let busy = false;
+  let lastQuery = "";
 
   /* ---------- 引导词：随上一轮话题变 ---------- */
   const BASE = ["介绍一下武汉", "数命 SPU 是什么", "介绍数命 SPU 社区", "SAIG 比赛怎么报名"];
@@ -3519,6 +3545,13 @@ if (typeof module !== "undefined") module.exports = JXW;
     ex.textContent = "考考它";
     ex.addEventListener("click", openExam);
     chipsBox.appendChild(ex);
+
+    const pf = document.createElement("button");
+    pf.type = "button";
+    pf.className = "chip chip-proof";
+    pf.textContent = "这作品怎么证明";
+    pf.addEventListener("click", openProof);
+    chipsBox.appendChild(pf);
   }
 
   /* ---------- 消息 ---------- */
@@ -3602,6 +3635,112 @@ if (typeof module !== "undefined") module.exports = JXW;
     return s;
   }
 
+  /* ---------- 让它真的"说"出来（浏览器自带语音，离线可用） ---------- */
+  const CAN_SPEAK = typeof window.speechSynthesis !== "undefined";
+  let voicesReady = false;
+  if (CAN_SPEAK) {
+    const load = () => { if (window.speechSynthesis.getVoices().length) voicesReady = true; };
+    load();
+    window.speechSynthesis.onvoiceschanged = load;
+    setTimeout(load, 600);
+  }
+  let speaking = null;
+
+  function pickVoice() {
+    const vs = window.speechSynthesis.getVoices ? window.speechSynthesis.getVoices() : [];
+    return vs.find(v => /zh[-_]CN/i.test(v.lang) && /Xiaoxiao|Yunxi|Ting|Huihui|Chinese/i.test(v.name))
+        || vs.find(v => /zh/i.test(v.lang)) || null;
+  }
+
+  function speak(text, btn) {
+    if (!CAN_SPEAK) return;
+    const s = window.speechSynthesis;
+    if (speaking === btn) { s.cancel(); speaking = null; if (btn) btn.classList.remove("on"); return; }
+    s.cancel();
+    const u = new SpeechSynthesisUtterance(String(text).replace(/[·•]/g, "，"));
+    u.lang = "zh-CN";
+    u.rate = 1.04;
+    u.pitch = 1.02;
+    const v = pickVoice();
+    if (v) u.voice = v;
+    if (btn) {
+      btn.classList.add("on");
+      speaking = btn;
+      u.onend = u.onerror = () => { btn.classList.remove("on"); if (speaking === btn) speaking = null; };
+    }
+    s.speak(u);
+  }
+
+  /* ---------- 把一条行程变成可转发的链接 ---------- */
+  function shareUrl(q) {
+    const base = location.href.split("?")[0].split("#")[0];
+    return base + "?q=" + encodeURIComponent(q);
+  }
+
+  function toast(msg) {
+    let t = document.getElementById("toast");
+    if (!t) {
+      t = el("div", "toast");
+      t.id = "toast";
+      (document.querySelector(".app") || document.body).appendChild(t);
+    }
+    t.textContent = msg;
+    t.classList.add("on");
+    clearTimeout(t._h);
+    t._h = setTimeout(() => t.classList.remove("on"), 1900);
+  }
+
+  /* ---------- 「这作品怎么证明」：把可核查的东西摊开 ---------- */
+  function openProof() {
+    let mask = document.getElementById("proof");
+    if (mask) { mask.remove(); return; }
+    mask = el("div", "qmask");
+    mask.id = "proof";
+    const card = el("div", "qcard");
+    card.style.maxWidth = "720px";
+
+    const head = el("div", "qhead");
+    head.appendChild(el("b", null, "这作品怎么证明不是瞎说"));
+    const x = el("button", "qx", "关闭");
+    x.type = "button";
+    x.addEventListener("click", () => mask.remove());
+    head.appendChild(x);
+    card.appendChild(head);
+
+    card.appendChild(el("p", "qtip",
+      "每一条回答的来源都可核查。下面是三层：素材 → 断言 → 复现。"));
+
+    const rows = [
+      ["① 只认素材包", "五份原文（SPU 说明 / 社区说明 / SAIG 说明 / 武汉概览 / 2026 旅游产品手册）里的数字与规则，才允许出现在回答里；每条回复底部的「依据」点开是原文句子，命中的数字标 ★。"],
+      ["② 87 条断言", "改一次功能，跑一次 node test.js：87 条断言覆盖四层追问、行程不折返、收工不超 21:30、预算可验算、被质疑时按原文坚持、乱码与越界兜底。"],
+      ["③ 三步复现", "双击单文件版离线跑 → 打开线上链路跑 → 问一句「评分不是 30 分吗」，看它是否按原文把 25 分/100 分摆回来。"],
+      ["④ 不调的也写清楚", "口才层是可选的：没配 endpoint 和 key 就整层不生效；即便配上，三道护栏（数字必须原样保留、免责句必须保留、长度 0.55–1.45 倍）不过就不采用。"]
+    ];
+    rows.forEach(([t, d]) => {
+      const it = el("div", "qitem");
+      const h = el("b", null, t);
+      h.style.display = "block";
+      h.style.marginBottom = "4px";
+      it.appendChild(h);
+      it.appendChild(el("span", null, d));
+      card.appendChild(it);
+    });
+
+    const foot = el("div", "prooflinks");
+    const a1 = el("a", null, "看演示视频");
+    a1.href = "https://files.catbox.moe/l2t9e2.mp4";
+    a1.target = "_blank";
+    const a2 = el("a", null, "看源码与测试");
+    a2.href = "https://github.com/hechenhao9/jiangxiaowu";
+    a2.target = "_blank";
+    foot.append(a1, a2);
+    card.appendChild(foot);
+
+    mask.appendChild(card);
+    mask.addEventListener("click", e => { if (e.target === mask) mask.remove(); });
+    (document.querySelector(".app") || document.body).appendChild(mask);
+  }
+
   function addBot(text, source, kind, plan, spot) {
     stamp(kind === "plan" ? 2 : 1);
     const m = el("div", "msg bot");
@@ -3612,6 +3751,23 @@ if (typeof module !== "undefined") module.exports = JXW;
     const tail = () => {
       if (spot) b.appendChild(locCard(spot));
       if (source) b.appendChild(srcLine(source, text));
+      const bar = el("div", "bub-tools");
+      if (CAN_SPEAK && voicesReady && text && text.length < 900) {
+        const sp = el("button", "bub-btn", "♪ 听它念");
+        sp.type = "button";
+        sp.title = "用浏览器自带的语音念出来（离线可用）";
+        sp.addEventListener("click", () => speak(text, sp));
+        bar.appendChild(sp);
+      }
+      const sh = el("button", "bub-btn", "复制分享链接");
+      sh.type = "button";
+      sh.title = "把这句话变成一个链接，别人点开就能看到";
+      sh.addEventListener("click", () => {
+        const u = shareUrl(lastQuery || text);
+        copy(u, sh, "链接已复制");
+      });
+      bar.appendChild(sh);
+      if (bar.children.length) b.appendChild(bar);
     };
 
     if (plan) {
@@ -3982,10 +4138,10 @@ if (typeof module !== "undefined") module.exports = JXW;
     requestAnimationFrame(() => { stream.scrollTop = stream.scrollHeight; });
   }
 
-  function copy(text, btn) {
+  function copy(text, btn, okText) {
     const done = () => {
       const old = btn.textContent;
-      btn.textContent = "已复制 ✓";
+      btn.textContent = okText || "已复制 ✓";
       setTimeout(() => { btn.textContent = old; }, 1600);
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -4012,6 +4168,7 @@ if (typeof module !== "undefined") module.exports = JXW;
     if (!q || busy) return;
     busy = true;
     sendBtn.disabled = true;
+    lastQuery = q;
 
     if (hero && hero.parentNode) hero.remove();
     addUser(q);
@@ -4079,6 +4236,24 @@ if (typeof module !== "undefined") module.exports = JXW;
       if (r && r.plan) window.openBoard(r.plan);
     });
   }
+
+  // 分享链接进来：?q=两天，人均五百… 直接跑这句话
+  (function fromLink() {
+    const m = /[?&]q=([^&]+)/.exec(location.search);
+    if (!m) return;
+    let q = "";
+    try { q = decodeURIComponent(m[1].replace(/\+/g, " ")); } catch (e) { q = ""; }
+    if (!q) return;
+    setTimeout(() => {
+      ask(q);
+      const st = document.createElement("div");
+      st.className = "ts";
+      const s = document.createElement("span");
+      s.textContent = "这条是别人转给你的行程";
+      st.appendChild(s);
+      stream.insertBefore(st, stream.firstChild);
+    }, 700);
+  })();
 
   $("#reset").addEventListener("click", () => {
     state = {};
