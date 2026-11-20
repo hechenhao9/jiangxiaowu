@@ -1361,6 +1361,37 @@ body.sized .chat { border-radius: 0 12px 12px 0; }
 /* 定尺模式下弹层要跟着 .app 走，不然会跑到视口中央（截图/录屏时错位） */
 .app { position: relative; }
 body.sized .qmask { position: absolute; }
+
+/* --- 首屏成品预览：产品页第一屏就给结果，不是空聊天框 --- */
+.hero .kick {
+  margin: 0 0 10px; font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+  color: #0e8fa8;
+}
+.hero h2 { font-size: 30px; line-height: 1.34; margin: 0 0 12px; }
+.hero .sub { margin: 0 0 22px; font-size: 14px; line-height: 1.75; color: #3c545f; max-width: 640px; }
+.hero-view { margin: 0 0 22px; }
+.pv-frame {
+  position: relative; overflow: hidden; border-radius: 12px;
+  border: 1px solid rgba(13,32,41,.12); background: #fff;
+  box-shadow: 0 24px 60px -32px rgba(8,34,43,.45);
+}
+.pv-in { position: relative; overflow: hidden; }
+.pv-in > .board {
+  position: absolute !important; inset: auto !important; left: 0; top: 0;
+  width: 1160px !important; height: 760px !important;
+  transform-origin: top left; border-radius: 0; box-shadow: none;
+  pointer-events: none;
+}
+.board-preview .bd-tools { display: none; }
+.pv-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  margin-top: 10px; font-size: 12.5px; color: #7c919b;
+}
+.pv-open {
+  border: 1px solid rgba(14,143,168,.4); background: #fff; color: #0e8fa8;
+  font-size: 12.5px; padding: 7px 14px; border-radius: 999px; cursor: pointer; font-family: inherit;
+}
+.pv-open:hover { background: #0e8fa8; color: #fff; border-color: #0e8fa8; }
 </style>
 <style>/* assets/board.css */
 /* 展板：1440×900 的一页版面，看而不是读 */
@@ -1549,8 +1580,18 @@ body.sized .qmask { position: absolute; }
 
     <div class="stream" id="stream">
       <div class="hero" id="hero">
-        <h2>我是江小武，武汉数命 SPU 的接待员。</h2>
-        <p>想逛武汉、认识 SPU 社区、排行程，还是聊聊 SAIG 比赛？<br>四个入口随你挑，也可以直接跟我说人话——比如“两天，人均五百，两个人，想清静”。</p>
+        <p class="kick">武汉 · 城市 AI 接待员 · 纯前端离线可跑</p>
+        <h2>说一句话，给你一条算得出来的武汉路线。</h2>
+        <p class="sub">不是聊天记录，是一页能拿走的展板：按天分开的路线、按真实经纬度摆的地图、跨江几次、钱花在哪。</p>
+
+        <div class="hero-view">
+          <div class="pv-frame"><div class="pv-in" id="pv-in"></div></div>
+          <div class="pv-bar">
+            <span class="pv-cap">样例：两天 · 人均五百 · 两个人 · 想清静</span>
+            <button class="pv-open" id="pv-open" type="button">展开完整展板 →</button>
+          </div>
+        </div>
+
         <div class="cards" id="cards">
           <button class="card" type="button" data-q="介绍一下武汉">
             <span class="no">01</span><span class="tt">逛逛武汉</span>
@@ -1569,7 +1610,7 @@ body.sized .qmask { position: absolute; }
             <span class="ds">比赛是什么、怎么评分、怎么报名</span>
           </button>
         </div>
-        <p class="board-invite">不想聊也行——<a href="#" id="board-demo">先看一页展板 →</a>（两天 · 人均五百 · 两个人 · 想清静）</p>
+        <p class="board-invite">四个入口随你挑，也可以直接跟我说人话——比如“两天，人均五百，两个人，想清静”。</p>
       </div>
     </div>
 
@@ -3448,6 +3489,248 @@ const JXW = (function () {
 
 if (typeof module !== "undefined") module.exports = JXW;
 </script>
+<script>/* assets/board.js */
+/* 展板：把行程从"聊天里的一段话"变成"一页能看的东西"。
+   左侧时间轴 / 中间大地图 / 右侧硬指标与预算，可复制成微信文案、可打印成 PDF。 */
+(function () {
+  function el(tag, cls, txt) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (txt != null) n.textContent = txt;
+    return n;
+  }
+  const NS = "http://www.w3.org/2000/svg";
+  function sv(tag, attrs) {
+    const n = document.createElementNS(NS, tag);
+    if (attrs) for (const k in attrs) n.setAttribute(k, attrs[k]);
+    return n;
+  }
+  function idx() {
+    const src = (typeof KB !== "undefined" && KB) || window.KB || {};
+    const map = {};
+    (src.SPOTS || []).forEach(s => { map[s.name] = s; });
+    return map;
+  }
+
+  function mapSvg(plan, active, spots) {
+    const all = [];
+    plan.days.forEach((d, di) => d.blocks.forEach(b => {
+      const s = spots[b.name];
+      if (s && s.lat) all.push({ lat: s.lat, lon: s.lon, day: di });
+    }));
+    let mine = all.filter(p => p.day === active);
+    if (mine.length < 2) mine = all;
+    if (!mine.length) mine = [{ lat: 30.56, lon: 114.30 }];
+    let a = Math.min(...mine.map(p => p.lat)), b = Math.max(...mine.map(p => p.lat));
+    let c = Math.min(...mine.map(p => p.lon)), d = Math.max(...mine.map(p => p.lon));
+    const needLat = 0.030, needLon = 0.055;
+    if (b - a < needLat) { const m = (a + b) / 2; a = m - needLat / 2; b = m + needLat / 2; }
+    if (d - c < needLon) { const m = (c + d) / 2; c = m - needLon / 2; d = m + needLon / 2; }
+    const pl = (b - a) * 0.1, pn = (d - c) * 0.1;
+    a -= pl; b += pl; c -= pn; d += pn;
+
+    const W = 100, H = 62;
+    const px = lon => ((lon - c) / (d - c)) * W;
+    const py = lat => ((b - lat) / (b - a)) * H;
+    const svg = sv("svg", { viewBox: `0 0 ${W} ${H}`, class: "bd-svg", preserveAspectRatio: "xMidYMid slice" });
+    svg.appendChild(sv("rect", { x: 0, y: 0, width: W, height: H, class: "pm-bg" }));
+    const yangtze = [[30.585, 114.276], [30.570, 114.281], [30.556, 114.290], [30.552, 114.302], [30.558, 114.332], [30.588, 114.375], [30.612, 114.410], [30.645, 114.452]];
+    const han = [[30.608, 114.235], [30.596, 114.262], [30.586, 114.278]];
+    [yangtze, han].forEach((line, i) => {
+      svg.appendChild(sv("path", {
+        d: line.map((p, k) => (k ? "L" : "M") + px(p[1]).toFixed(2) + " " + py(p[0]).toFixed(2)).join(" "),
+        class: "pm-river" + (i ? " small" : ""), fill: "none"
+      }));
+    });
+    [[30.522, 114.330, "武昌"], [30.622, 114.272, "汉口"], [30.545, 114.240, "汉阳"]].forEach(([t, la, lo]) => {
+      if (la > b || la < a || lo > d || lo < c) return;
+      const tx = sv("text", { x: px(lo).toFixed(2), y: py(la).toFixed(2), class: "pm-town" });
+      tx.textContent = t;
+      svg.appendChild(tx);
+    });
+    if (mine.length > 1) {
+      svg.appendChild(sv("polyline", {
+        points: mine.map(p => px(p.lon).toFixed(2) + "," + py(p.lat).toFixed(2)).join(" "),
+        class: "pm-route", fill: "none"
+      }));
+    }
+    mine.forEach((p, i) => {
+      const g = sv("g", {});
+      g.appendChild(sv("circle", { cx: px(p.lon).toFixed(2), cy: py(p.lat).toFixed(2), r: 1.9, class: "pm-dot" }));
+      const t = sv("text", { x: px(p.lon).toFixed(2), y: (py(p.lat) + 0.7).toFixed(2), class: "pm-idx" });
+      t.textContent = String(i + 1);
+      g.appendChild(t);
+      svg.appendChild(g);
+    });
+    return svg;
+  }
+
+  function wechatText(plan) {
+    const out = ["【" + (plan.theme || "武汉行程") + "】"];
+    plan.days.forEach((d, i) => {
+      out.push("");
+      out.push("Day " + (i + 1) + " · " + d.title);
+      d.blocks.forEach(b => out.push("  " + b.time + "  " + b.name + (b.dur ? "（" + b.dur + "）" : "")));
+    });
+    const m = plan.metrics || {};
+    out.push("");
+    out.push("跨江 " + (m.crossRiver || 0) + " 次 · " + m.stops + " 个点 · 最长一段路上 " + m.maxMove + " 分钟");
+    if (plan.cost) out.push("人均约 " + plan.cost.total + " 元（门票 " + plan.cost.ticket + " + 吃 " + plan.cost.meal + " + 交通 " + plan.cost.transit + "）");
+    if (plan.summary) out.push(plan.summary);
+    return out.join("\n");
+  }
+
+  let host = null;
+
+  function open(plan, opts) {
+    if (!plan) return null;
+    const preview = !!(opts && opts.preview);
+    if (!preview && host) host.remove();
+    const spots = idx();
+    let active = 0;
+
+    host = el("div", "board" + (preview ? " board-preview" : ""));
+    const head = el("div", "bd-head");
+    const left = el("div", "bd-titlebox");
+    left.appendChild(el("div", "bd-kicker", "行程展板"));
+    left.appendChild(el("h2", "bd-theme", plan.theme || "武汉行程"));
+    if (plan.echoes && plan.echoes.length) left.appendChild(el("p", "bd-echo", "因为你说过：" + plan.echoes.map(e => e.split("→")[0].trim()).join(" / ")));
+    head.appendChild(left);
+
+    const tools = el("div", "bd-tools");
+    const mk = (txt, fn, cls) => {
+      const b = el("button", "bd-btn" + (cls ? " " + cls : ""), txt);
+      b.type = "button";
+      b.onclick = fn;
+      return b;
+    };
+    tools.appendChild(mk("复制成微信文案", () => {
+      const t = wechatText(plan);
+      const done = () => { tools.querySelector(".bd-btn").textContent = "已复制 ✓"; setTimeout(() => { tools.querySelector(".bd-btn").textContent = "复制成微信文案"; }, 1600); };
+      if (navigator.clipboard) navigator.clipboard.writeText(t).then(done).catch(done);
+      else {
+        const ta = el("textarea"); ta.value = t; document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); } catch (e) {}
+        ta.remove(); done();
+      }
+    }));
+    tools.appendChild(mk("打印 / 存 PDF", () => window.print(), "ghost"));
+    tools.appendChild(mk("回到对话", () => { host.remove(); host = null; }, "ghost"));
+    head.appendChild(tools);
+    host.appendChild(head);
+
+    const body = el("div", "bd-body");
+
+    /* 左：时间轴 */
+    const pane = el("aside", "bd-pane");
+    const tabs = el("div", "bd-tabs");
+    const list = el("div", "bd-list");
+    plan.days.forEach((d, i) => {
+      const t = el("button", "bd-tab" + (i === 0 ? " on" : ""), "Day " + (i + 1));
+      t.type = "button";
+      t.onclick = () => {
+        active = i;
+        [...tabs.children].forEach((c, k) => c.classList.toggle("on", k === i));
+        paint();
+      };
+      tabs.appendChild(t);
+    });
+    pane.appendChild(tabs);
+    pane.appendChild(list);
+    body.appendChild(pane);
+
+    /* 中：大地图 */
+    const mid = el("div", "bd-mapbox");
+    body.appendChild(mid);
+
+    /* 右：指标 */
+    const side = el("aside", "bd-side");
+    const m = plan.metrics || {};
+    const mbox = el("div", "bd-metrics");
+    [["跨江", (m.crossRiver || 0) + " 次", m.crossRiver ? "过江挪整天" : "全程同侧"],
+     ["片区切换", (m.areaHops || 0) + " 次", "不来回折返"],
+     ["点位", (m.stops || 0) + " 个", "日均 " + Math.max(1, Math.round((m.stops || 0) / plan.days.length))],
+     ["最长一段路上", (m.maxMove || 0) + " 分", "含打车/地铁"]].forEach(([k, v, s]) => {
+      const c = el("div", "bd-mt");
+      c.appendChild(el("b", null, v));
+      c.appendChild(el("span", null, k));
+      if (s) c.appendChild(el("i", null, s));
+      mbox.appendChild(c);
+    });
+    side.appendChild(mbox);
+
+    if (plan.cost) {
+      const cost = el("div", "bd-cost");
+      cost.appendChild(el("div", "bd-h", "人均预算（不含住宿）"));
+      const line = el("div", "bd-costline");
+      line.appendChild(el("b", null, "≈ " + plan.cost.total + " 元"));
+      cost.appendChild(line);
+      cost.appendChild(el("div", "bd-costsub", "门票 " + plan.cost.ticket + " + 吃 " + plan.cost.meal + " + 市内交通 " + plan.cost.transit));
+      side.appendChild(cost);
+    }
+    if (plan.rainTip) {
+      const r = el("div", "bd-note");
+      r.appendChild(el("b", null, "下雨/太晒怎么办"));
+      r.appendChild(el("p", null, plan.rainTip));
+      side.appendChild(r);
+    }
+    if (plan.summary) {
+      const s = el("div", "bd-sum");
+      s.textContent = plan.summary;
+      side.appendChild(s);
+    }
+    body.appendChild(side);
+    host.appendChild(body);
+
+    const foot = el("div", "bd-foot", "点位按真实经纬度摆放，数字是当日顺序；票价、开放时间出发前请以官方信息为准。");
+    host.appendChild(foot);
+
+    function paint() {
+      list.innerHTML = "";
+      const d = plan.days[active];
+      const dt = el("div", "bd-dayt");
+      dt.appendChild(el("b", null, "Day " + (active + 1)));
+      dt.appendChild(el("span", null, d.title));
+      list.appendChild(dt);
+      (d.dropped && d.dropped.length) ? list.appendChild(el("p", "bd-drop", "这次拿掉了：" + d.dropped.join("、"))) : null;
+      d.blocks.forEach(b => {
+        const row = el("div", "bd-row" + (/餐/.test(b.slot) ? " meal" : "") + (/晚上/.test(b.slot) ? " night" : ""));
+        row.appendChild(el("div", "bd-t", b.time));
+        const main = el("div", "bd-main");
+        main.appendChild(el("div", "bd-n", b.name));
+        if (b.why) main.appendChild(el("div", "bd-w", b.why));
+        const meta = [b.dur, b.go].filter(Boolean).join(" · ");
+        if (meta) main.appendChild(el("div", "bd-g", meta));
+        row.appendChild(main);
+        list.appendChild(row);
+      });
+      mid.innerHTML = "";
+      mid.appendChild(mapSvg(plan, active, spots));
+      const cap = el("div", "bd-cap", (d.area || d.title) + " · 按实际经纬度摆放");
+      mid.appendChild(cap);
+      const strip = el("div", "bd-pics");
+      let n = 0;
+      d.blocks.forEach(b => {
+        const s = spots[b.name];
+        if (!s || !s.img || n >= 4) return;
+        n++;
+        const th = el("div", "bd-pic");
+        th.style.backgroundImage = 'url("' + s.img + '")';
+        th.appendChild(el("span", null, s.name));
+        strip.appendChild(th);
+      });
+      if (n) mid.appendChild(strip);
+    }
+    paint();
+
+    if (preview) return host;
+    (document.querySelector(".app") || document.body).appendChild(host);
+    return host;
+  }
+
+  window.openBoard = open;
+})();
+</script>
 <script>/* assets/ui.js */
 /* ============================================================
  * 江小武 · 界面层  ui.js
@@ -4241,6 +4524,29 @@ if (typeof module !== "undefined") module.exports = JXW;
     });
   }
 
+  // 首屏直接给成品：把样例行程渲染成展板缩略图（产品页的第一屏不该是空聊天框）
+  (function heroPreview() {
+    const box = document.getElementById("pv-in");
+    if (!box || !window.openBoard) return;
+    const J = (typeof JXW !== "undefined" && JXW) || window.JXW;
+    if (!J) return;
+    const r = J.reply("两天，人均五百，两个人，想清静", { turns: 0, depth: {}, hintIdx: 0 });
+    if (!r || !r.plan) return;
+    const el2 = window.openBoard(r.plan, { preview: true });
+    if (!el2) return;
+    box.appendChild(el2);
+    const fit = () => {
+      const w = (box.parentNode && box.parentNode.clientWidth) || box.clientWidth || 960;
+      const s = Math.min(1, (w - 10) / 1160);
+      el2.style.transform = "scale(" + s + ")";
+      box.style.height = Math.round(760 * s) + "px";
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    const btn = document.getElementById("pv-open");
+    if (btn) btn.addEventListener("click", () => window.openBoard(r.plan));
+  })();
+
   // 分享链接进来：?q=两天，人均五百… 直接跑这句话
   (function fromLink() {
     const m = /[?&]q=([^&]+)/.exec(location.search);
@@ -4314,245 +4620,6 @@ if (typeof module !== "undefined") module.exports = JXW;
     };
     setTimeout(step, 400);
   })();
-})();
-</script>
-<script>/* assets/board.js */
-/* 展板：把行程从"聊天里的一段话"变成"一页能看的东西"。
-   左侧时间轴 / 中间大地图 / 右侧硬指标与预算，可复制成微信文案、可打印成 PDF。 */
-(function () {
-  function el(tag, cls, txt) {
-    const n = document.createElement(tag);
-    if (cls) n.className = cls;
-    if (txt != null) n.textContent = txt;
-    return n;
-  }
-  const NS = "http://www.w3.org/2000/svg";
-  function sv(tag, attrs) {
-    const n = document.createElementNS(NS, tag);
-    if (attrs) for (const k in attrs) n.setAttribute(k, attrs[k]);
-    return n;
-  }
-  function idx() {
-    const src = (typeof KB !== "undefined" && KB) || window.KB || {};
-    const map = {};
-    (src.SPOTS || []).forEach(s => { map[s.name] = s; });
-    return map;
-  }
-
-  function mapSvg(plan, active, spots) {
-    const all = [];
-    plan.days.forEach((d, di) => d.blocks.forEach(b => {
-      const s = spots[b.name];
-      if (s && s.lat) all.push({ lat: s.lat, lon: s.lon, day: di });
-    }));
-    let mine = all.filter(p => p.day === active);
-    if (mine.length < 2) mine = all;
-    if (!mine.length) mine = [{ lat: 30.56, lon: 114.30 }];
-    let a = Math.min(...mine.map(p => p.lat)), b = Math.max(...mine.map(p => p.lat));
-    let c = Math.min(...mine.map(p => p.lon)), d = Math.max(...mine.map(p => p.lon));
-    const needLat = 0.030, needLon = 0.055;
-    if (b - a < needLat) { const m = (a + b) / 2; a = m - needLat / 2; b = m + needLat / 2; }
-    if (d - c < needLon) { const m = (c + d) / 2; c = m - needLon / 2; d = m + needLon / 2; }
-    const pl = (b - a) * 0.1, pn = (d - c) * 0.1;
-    a -= pl; b += pl; c -= pn; d += pn;
-
-    const W = 100, H = 62;
-    const px = lon => ((lon - c) / (d - c)) * W;
-    const py = lat => ((b - lat) / (b - a)) * H;
-    const svg = sv("svg", { viewBox: `0 0 ${W} ${H}`, class: "bd-svg", preserveAspectRatio: "xMidYMid slice" });
-    svg.appendChild(sv("rect", { x: 0, y: 0, width: W, height: H, class: "pm-bg" }));
-    const yangtze = [[30.585, 114.276], [30.570, 114.281], [30.556, 114.290], [30.552, 114.302], [30.558, 114.332], [30.588, 114.375], [30.612, 114.410], [30.645, 114.452]];
-    const han = [[30.608, 114.235], [30.596, 114.262], [30.586, 114.278]];
-    [yangtze, han].forEach((line, i) => {
-      svg.appendChild(sv("path", {
-        d: line.map((p, k) => (k ? "L" : "M") + px(p[1]).toFixed(2) + " " + py(p[0]).toFixed(2)).join(" "),
-        class: "pm-river" + (i ? " small" : ""), fill: "none"
-      }));
-    });
-    [[30.522, 114.330, "武昌"], [30.622, 114.272, "汉口"], [30.545, 114.240, "汉阳"]].forEach(([t, la, lo]) => {
-      if (la > b || la < a || lo > d || lo < c) return;
-      const tx = sv("text", { x: px(lo).toFixed(2), y: py(la).toFixed(2), class: "pm-town" });
-      tx.textContent = t;
-      svg.appendChild(tx);
-    });
-    if (mine.length > 1) {
-      svg.appendChild(sv("polyline", {
-        points: mine.map(p => px(p.lon).toFixed(2) + "," + py(p.lat).toFixed(2)).join(" "),
-        class: "pm-route", fill: "none"
-      }));
-    }
-    mine.forEach((p, i) => {
-      const g = sv("g", {});
-      g.appendChild(sv("circle", { cx: px(p.lon).toFixed(2), cy: py(p.lat).toFixed(2), r: 1.9, class: "pm-dot" }));
-      const t = sv("text", { x: px(p.lon).toFixed(2), y: (py(p.lat) + 0.7).toFixed(2), class: "pm-idx" });
-      t.textContent = String(i + 1);
-      g.appendChild(t);
-      svg.appendChild(g);
-    });
-    return svg;
-  }
-
-  function wechatText(plan) {
-    const out = ["【" + (plan.theme || "武汉行程") + "】"];
-    plan.days.forEach((d, i) => {
-      out.push("");
-      out.push("Day " + (i + 1) + " · " + d.title);
-      d.blocks.forEach(b => out.push("  " + b.time + "  " + b.name + (b.dur ? "（" + b.dur + "）" : "")));
-    });
-    const m = plan.metrics || {};
-    out.push("");
-    out.push("跨江 " + (m.crossRiver || 0) + " 次 · " + m.stops + " 个点 · 最长一段路上 " + m.maxMove + " 分钟");
-    if (plan.cost) out.push("人均约 " + plan.cost.total + " 元（门票 " + plan.cost.ticket + " + 吃 " + plan.cost.meal + " + 交通 " + plan.cost.transit + "）");
-    if (plan.summary) out.push(plan.summary);
-    return out.join("\n");
-  }
-
-  let host = null;
-
-  function open(plan) {
-    if (!plan) return;
-    if (host) host.remove();
-    const spots = idx();
-    let active = 0;
-
-    host = el("div", "board");
-    const head = el("div", "bd-head");
-    const left = el("div", "bd-titlebox");
-    left.appendChild(el("div", "bd-kicker", "行程展板"));
-    left.appendChild(el("h2", "bd-theme", plan.theme || "武汉行程"));
-    if (plan.echoes && plan.echoes.length) left.appendChild(el("p", "bd-echo", "因为你说过：" + plan.echoes.map(e => e.split("→")[0].trim()).join(" / ")));
-    head.appendChild(left);
-
-    const tools = el("div", "bd-tools");
-    const mk = (txt, fn, cls) => {
-      const b = el("button", "bd-btn" + (cls ? " " + cls : ""), txt);
-      b.type = "button";
-      b.onclick = fn;
-      return b;
-    };
-    tools.appendChild(mk("复制成微信文案", () => {
-      const t = wechatText(plan);
-      const done = () => { tools.querySelector(".bd-btn").textContent = "已复制 ✓"; setTimeout(() => { tools.querySelector(".bd-btn").textContent = "复制成微信文案"; }, 1600); };
-      if (navigator.clipboard) navigator.clipboard.writeText(t).then(done).catch(done);
-      else {
-        const ta = el("textarea"); ta.value = t; document.body.appendChild(ta); ta.select();
-        try { document.execCommand("copy"); } catch (e) {}
-        ta.remove(); done();
-      }
-    }));
-    tools.appendChild(mk("打印 / 存 PDF", () => window.print(), "ghost"));
-    tools.appendChild(mk("回到对话", () => { host.remove(); host = null; }, "ghost"));
-    head.appendChild(tools);
-    host.appendChild(head);
-
-    const body = el("div", "bd-body");
-
-    /* 左：时间轴 */
-    const pane = el("aside", "bd-pane");
-    const tabs = el("div", "bd-tabs");
-    const list = el("div", "bd-list");
-    plan.days.forEach((d, i) => {
-      const t = el("button", "bd-tab" + (i === 0 ? " on" : ""), "Day " + (i + 1));
-      t.type = "button";
-      t.onclick = () => {
-        active = i;
-        [...tabs.children].forEach((c, k) => c.classList.toggle("on", k === i));
-        paint();
-      };
-      tabs.appendChild(t);
-    });
-    pane.appendChild(tabs);
-    pane.appendChild(list);
-    body.appendChild(pane);
-
-    /* 中：大地图 */
-    const mid = el("div", "bd-mapbox");
-    body.appendChild(mid);
-
-    /* 右：指标 */
-    const side = el("aside", "bd-side");
-    const m = plan.metrics || {};
-    const mbox = el("div", "bd-metrics");
-    [["跨江", (m.crossRiver || 0) + " 次", m.crossRiver ? "过江挪整天" : "全程同侧"],
-     ["片区切换", (m.areaHops || 0) + " 次", "不来回折返"],
-     ["点位", (m.stops || 0) + " 个", "日均 " + Math.max(1, Math.round((m.stops || 0) / plan.days.length))],
-     ["最长一段路上", (m.maxMove || 0) + " 分", "含打车/地铁"]].forEach(([k, v, s]) => {
-      const c = el("div", "bd-mt");
-      c.appendChild(el("b", null, v));
-      c.appendChild(el("span", null, k));
-      if (s) c.appendChild(el("i", null, s));
-      mbox.appendChild(c);
-    });
-    side.appendChild(mbox);
-
-    if (plan.cost) {
-      const cost = el("div", "bd-cost");
-      cost.appendChild(el("div", "bd-h", "人均预算（不含住宿）"));
-      const line = el("div", "bd-costline");
-      line.appendChild(el("b", null, "≈ " + plan.cost.total + " 元"));
-      cost.appendChild(line);
-      cost.appendChild(el("div", "bd-costsub", "门票 " + plan.cost.ticket + " + 吃 " + plan.cost.meal + " + 市内交通 " + plan.cost.transit));
-      side.appendChild(cost);
-    }
-    if (plan.rainTip) {
-      const r = el("div", "bd-note");
-      r.appendChild(el("b", null, "下雨/太晒怎么办"));
-      r.appendChild(el("p", null, plan.rainTip));
-      side.appendChild(r);
-    }
-    if (plan.summary) {
-      const s = el("div", "bd-sum");
-      s.textContent = plan.summary;
-      side.appendChild(s);
-    }
-    body.appendChild(side);
-    host.appendChild(body);
-
-    const foot = el("div", "bd-foot", "点位按真实经纬度摆放，数字是当日顺序；票价、开放时间出发前请以官方信息为准。");
-    host.appendChild(foot);
-
-    function paint() {
-      list.innerHTML = "";
-      const d = plan.days[active];
-      const dt = el("div", "bd-dayt");
-      dt.appendChild(el("b", null, "Day " + (active + 1)));
-      dt.appendChild(el("span", null, d.title));
-      list.appendChild(dt);
-      (d.dropped && d.dropped.length) ? list.appendChild(el("p", "bd-drop", "这次拿掉了：" + d.dropped.join("、"))) : null;
-      d.blocks.forEach(b => {
-        const row = el("div", "bd-row" + (/餐/.test(b.slot) ? " meal" : "") + (/晚上/.test(b.slot) ? " night" : ""));
-        row.appendChild(el("div", "bd-t", b.time));
-        const main = el("div", "bd-main");
-        main.appendChild(el("div", "bd-n", b.name));
-        if (b.why) main.appendChild(el("div", "bd-w", b.why));
-        const meta = [b.dur, b.go].filter(Boolean).join(" · ");
-        if (meta) main.appendChild(el("div", "bd-g", meta));
-        row.appendChild(main);
-        list.appendChild(row);
-      });
-      mid.innerHTML = "";
-      mid.appendChild(mapSvg(plan, active, spots));
-      const cap = el("div", "bd-cap", (d.area || d.title) + " · 按实际经纬度摆放");
-      mid.appendChild(cap);
-      const strip = el("div", "bd-pics");
-      let n = 0;
-      d.blocks.forEach(b => {
-        const s = spots[b.name];
-        if (!s || !s.img || n >= 4) return;
-        n++;
-        const th = el("div", "bd-pic");
-        th.style.backgroundImage = 'url("' + s.img + '")';
-        th.appendChild(el("span", null, s.name));
-        strip.appendChild(th);
-      });
-      if (n) mid.appendChild(strip);
-    }
-    paint();
-
-    (document.querySelector(".app") || document.body).appendChild(host);
-  }
-
-  window.openBoard = open;
 })();
 </script>
 </body>
